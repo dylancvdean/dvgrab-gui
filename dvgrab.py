@@ -35,6 +35,40 @@ DEFAULT_OUTPUT = str(Path.home() / "Videos")
 LOG_LINES_MAX = 5000
 
 # --------------------------- Utilities & Config ---------------------------
+def system_pick_directory(initial_dir=None):
+    """
+    Try native folder pickers first:
+      - KDE: kdialog --getexistingdirectory
+      - GNOME/etc.: zenity --file-selection --directory
+    Falls back to Tk's filedialog if none are available (return None and let caller handle).
+    """
+    initial_dir = str(Path(initial_dir or Path.home()).expanduser())
+    desktop = (os.environ.get("XDG_CURRENT_DESKTOP", "") + " " +
+               os.environ.get("DESKTOP_SESSION", "")).upper()
+    prefer_kde = "KDE" in desktop or "PLASMA" in desktop or os.environ.get("KDE_FULL_SESSION") == "true"
+
+    cmds = []
+    if prefer_kde and shutil.which("kdialog"):
+        cmds.append(["kdialog", "--getexistingdirectory", initial_dir])
+    # zenity works well across GNOME, Cinnamon, MATE, XFCE (if installed)
+    if shutil.which("zenity"):
+        idir = initial_dir if initial_dir.endswith(os.sep) else initial_dir + os.sep
+        cmds.append(["zenity", "--file-selection", "--directory", "--filename", idir])
+    # Try both even if desktop guess was wrong
+    if not prefer_kde and shutil.which("kdialog"):
+        cmds.append(["kdialog", "--getexistingdirectory", initial_dir])
+
+    for cmd in cmds:
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if proc.returncode == 0:
+                choice = proc.stdout.strip()
+                if choice:
+                    return choice
+        except Exception:
+            pass  # try next option
+
+    return None  # let caller fall back to Tk
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -480,9 +514,17 @@ class App(ttk.Frame):
         self._log("Settings saved.", is_err=False)
 
     def choose_output_dir(self):
-        d = filedialog.askdirectory(initialdir=self.output_dir_var.get() or DEFAULT_OUTPUT)
-        if d:
-            self.output_dir_var.set(d)
+        # Try native picker first
+        picked = system_pick_directory(self.output_dir_var.get() or DEFAULT_OUTPUT)
+        if not picked:
+            # Fallback to Tk dialog
+            picked = filedialog.askdirectory(initialdir=self.output_dir_var.get() or DEFAULT_OUTPUT)
+        if picked:
+            self.output_dir_var.set(picked)
+            # optionally persist immediately so next launch remembers it
+            self.cfg["output_dir"] = picked
+            save_config(self.cfg)
+
 
     def copy_command(self):
         try:
